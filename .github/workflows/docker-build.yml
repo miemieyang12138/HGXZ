@@ -36,7 +36,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/wx2cyj/hgxz
+          images: ghcr.io/miemieyang12138/hgxz
           tags: |
             type=raw,value=latest
 

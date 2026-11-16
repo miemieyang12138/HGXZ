@@ -38,4 +38,4 @@ services:
 
   # --- 使用 GitHub Actions 自动构建的镜像（不想在 NAS 上 build 时）---
   # 把上面的 build: . 删掉，image 改为下面的地址，并先执行 docker login ghcr.io
-  # image: ghcr.io/wx2cyj/hgxz:latest
+  # image: ghcr.io/miemieyang12138/hgxz:latest
