@@ -25,6 +25,10 @@ _sync_status: dict = {'running': False, 'last_sync': None, 'last_error': None}
 # syncs can never run at once -- they would download the same episode into the
 # same ".part" file.
 _sync_lock = Lock()
+# Album ids waiting for the sync slot. Single-album downloads queue up instead
+# of being rejected while another sync is running.
+_sync_queue: list[int] = []
+_queue_lock = Lock()
 
 
 def try_acquire_sync() -> bool:
@@ -131,20 +135,49 @@ def create_app() -> FastAPI:
                 LOG.exception('%s failed: %s', name, exc)
             finally:
                 release_sync()
+                _pump_sync_queue()
 
         import threading
         threading.Thread(target=_run, daemon=True, name=name).start()
         return True
+
+    def _pump_sync_queue():
+        """When the sync slot frees up, start the next queued album download."""
+        with _queue_lock:
+            if not _sync_queue or not _archiver_ref:
+                return
+            album_id = _sync_queue[0]
+        archiver = _archiver_ref[0]
+
+        def work():
+            with _queue_lock:
+                if _sync_queue and _sync_queue[0] == album_id:
+                    _sync_queue.pop(0)
+            LOG.info('album=%s starting from download queue', album_id)
+            archiver.scan(only_id=album_id)
+
+        # If another job grabbed the slot first the album stays at the queue
+        # head and is picked up when that job finishes.
+        _start_background('queued-sync', work)
 
     @app.post('/api/sync')
     async def trigger_sync(album_id: int | None = None):
         if not _archiver_ref:
             return JSONResponse({'error': 'not ready'}, 503)
         archiver = _archiver_ref[0]
-        if not _start_background('manual-sync',
-                                 lambda: archiver.scan(only_id=album_id)):
-            return JSONResponse({'error': '同步正在进行中'}, 409)
-        return {'status': 'started', 'album_id': album_id}
+        if _start_background('manual-sync',
+                             lambda: archiver.scan(only_id=album_id)):
+            return {'status': 'started', 'album_id': album_id}
+        if album_id is not None:
+            # Single-album downloads queue up instead of being rejected while
+            # another sync is running; the queue drains automatically.
+            with _queue_lock:
+                if album_id not in _sync_queue:
+                    _sync_queue.append(album_id)
+                position = _sync_queue.index(album_id) + 1
+            LOG.info('album=%s queued for download (position %d)', album_id, position)
+            return {'status': 'queued', 'album_id': album_id, 'position': position}
+        return JSONResponse({'error': '同步正在进行中'}, 409)
 
     @app.post('/api/retry-failed')
     async def retry_failed(album_id: int | None = None):
@@ -213,7 +246,9 @@ def create_app() -> FastAPI:
 
     @app.get('/api/sync-status')
     async def sync_status():
-        return _sync_status
+        with _queue_lock:
+            queue = list(_sync_queue)
+        return {**_sync_status, 'queue': queue}
 
     @app.websocket('/ws/logs')
     async def ws_logs(websocket: WebSocket):

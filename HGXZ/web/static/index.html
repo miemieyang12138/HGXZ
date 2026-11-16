@@ -536,8 +536,14 @@ async function siteDownload(id, btn){
   btn.disabled = true;
   btn.textContent = '已启动…';
   try {
-    await api('/api/sync?album_id=' + id, {method: 'POST'});
-    toast('已开始下载 ID ' + id + '，进度见「同步日志」');
+    const r = await api('/api/sync?album_id=' + id, {method: 'POST'});
+    if (r.status === 'queued') {
+      btn.textContent = '已排队';
+      toast('有任务正在下载，已加入队列（第 ' + r.position + ' 位），完成后自动开始');
+    } else {
+      btn.textContent = '已启动';
+      toast('已开始下载 ID ' + id + '，进度见「同步日志」');
+    }
   } catch(e) {
     toast('启动下载失败：' + e.message, true);
     btn.disabled = false;
@@ -726,8 +732,12 @@ document.getElementById('btn-retry-all').addEventListener('click', async () => {
 });
 async function syncAlbum(id){
   try {
-    await api('/api/sync?album_id=' + id, {method: 'POST'});
-    toast('该专辑同步已开始');
+    const r = await api('/api/sync?album_id=' + id, {method: 'POST'});
+    if (r.status === 'queued') {
+      toast('有任务正在下载，该专辑已加入队列（第 ' + r.position + ' 位），完成后自动开始');
+    } else {
+      toast('该专辑同步已开始');
+    }
     updateSync({running: true, last_sync: null, last_error: null});
   } catch(e) { toast('启动失败：' + e.message, true); }
 }
