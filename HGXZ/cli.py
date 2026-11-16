@@ -161,11 +161,14 @@ class Archiver:
         if cat_match:
             category = cat_match
         elif album.category != category['name']:
-            LOG.warning('skip album=%s expected=%s actual=%s',
-                        album.id, category['name'], album.category)
-            return {'album_id': album.id, 'skipped': True,
-                    'expected_category': category['name'],
-                    'actual_category': album.category}
+            # The detail page only names a configured category when the site
+            # has something specific to say; since the redesign it reports a
+            # generic label (e.g. "短剧") for every album. The listing channel
+            # we discovered the album on is then the better classifier, so
+            # keep the listing category instead of dropping the album.
+            LOG.info('album=%s detail category=%s not configured; keeping listing category=%s',
+                     album.id, album.category, category['name'])
+            album.category = category['name']
         album_dir = self._album_dir(album, category)
         self.state.upsert_album(album.id, album.category, album.title,
                                 album.episode_count, album.ended,
@@ -311,7 +314,7 @@ def load_config(path: Path) -> dict:
     return json.loads(path.read_text(encoding='utf-8'))
 
 
-def run_daemon(config: dict, schedule: str, web_port: int = 8099) -> int:
+def run_daemon(config: dict, schedule: str, web_port: int = 8099, *, no_sync: bool = False) -> int:
     from .web.app import (create_app, mark_sync_finished, release_sync,
                           set_shared_state, try_acquire_sync)
     from .web.log_handler import LogBuffer
@@ -372,8 +375,11 @@ def run_daemon(config: dict, schedule: str, web_port: int = 8099) -> int:
             while time.monotonic() < deadline:
                 time.sleep(30)
 
-    sync_thread = threading.Thread(target=sync_loop, daemon=True, name='sync-daemon')
-    sync_thread.start()
+    if no_sync:
+        LOG.info('auto sync disabled (--no-sync): WebUI only, no category crawl')
+    else:
+        sync_thread = threading.Thread(target=sync_loop, daemon=True, name='sync-daemon')
+        sync_thread.start()
 
     LOG.info('WebUI starting on port %s', web_port)
     app = create_app()
@@ -386,6 +392,9 @@ def main() -> int:
     parser.add_argument('--config', default='/config/config.json')
     parser.add_argument('--metadata-only', action='store_true')
     parser.add_argument('--only-id', type=int)
+    parser.add_argument('--search', help='按关键词搜索站点短剧并列出结果；配合 --download 直接下载精确匹配的那部')
+    parser.add_argument('--download', action='store_true',
+                        help='与 --search 连用：下载标题与关键词完全匹配的短剧')
     parser.add_argument('--max-albums', type=int)
     parser.add_argument('--max-episodes', type=int)
     parser.add_argument('--rebuild-covers', action='store_true')
@@ -397,6 +406,8 @@ def main() -> int:
                         help='常驻运行：启动后同步一次，之后每天定时同步，同时开启 WebUI')
     parser.add_argument('--schedule', default=os.environ.get('SCHEDULE', '03:30'),
                         help='--daemon 模式下的每日同步时间 HH:MM')
+    parser.add_argument('--no-sync', action='store_true',
+                        help='--daemon 模式下禁用自动同步（不爬分类、不自动下载），仅提供 WebUI')
     parser.add_argument('--port', type=int, default=8099,
                         help='WebUI 端口（默认 8099）')
     args = parser.parse_args()
@@ -411,8 +422,54 @@ def main() -> int:
             logging.getLogger('HGXZ').warning('failed to set umask=%s: %s', umask_val, exc)
     config = load_config(Path(args.config))
 
+    if args.search:
+        site = config['site']
+        client = HuangguoClient(
+            site['base_url'],
+            float(site.get('request_interval', 2)),
+            int(site.get('timeout', 30)),
+            backup_urls=site.get('backup_urls', []),
+        )
+        items = client.search(args.search)
+        keyword = args.search.strip()
+        if not args.download:
+            if args.json:
+                print(json.dumps(items, ensure_ascii=False, indent=2))
+            else:
+                for it in items:
+                    status = '已完结' if it.get('is_finished') else '连载中'
+                    print(f"ID {it.get('id')} | {it.get('title')} | {status} | 共 {it.get('episode_count')} 集")
+                if not items:
+                    print(f'没有找到与 "{keyword}" 相关的短剧')
+                else:
+                    print(f'\n下载其中一部: python -m HGXZ.cli --config {args.config} --only-id <ID>')
+                    print(f'直接下载标题精确匹配的: python -m HGXZ.cli --config {args.config} --search "{keyword}" --download')
+            return 0 if items else 1
+        matches = [it for it in items if str(it.get('title') or '').strip() == keyword]
+        if not matches:
+            print(f'没有标题与 "{keyword}" 完全匹配的短剧。相近结果如下（可用 --only-id <ID> 指定下载）:')
+            for it in items:
+                print(f"ID {it.get('id')} | {it.get('title')} | 共 {it.get('episode_count')} 集")
+            return 1
+        archiver = Archiver(config)
+        try:
+            results = [archiver.sync_album(int(it['id']), config['site']['categories'][0],
+                                           max_episodes=args.max_episodes, force=True)
+                       for it in matches]
+        finally:
+            archiver.close()
+        if args.json:
+            print(json.dumps({'results': results}, ensure_ascii=False, indent=2))
+        else:
+            for r in results:
+                album = r.get('album') or {}
+                failed = r.get('failed_episodes') or []
+                print(f"ID {r.get('album_id', album.get('id'))} [{album.get('title')}] "
+                      f"完成 {r.get('episodes_done')} 集, 失败 {len(failed)} 集 -> {r.get('directory')}")
+        return 0
+
     if args.daemon:
-        return run_daemon(config, args.schedule, args.port)
+        return run_daemon(config, args.schedule, args.port, no_sync=args.no_sync)
 
     if args.scan_existing:
         from .scanner import scan_existing

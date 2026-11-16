@@ -169,6 +169,24 @@ def create_app() -> FastAPI:
             return JSONResponse({'error': '同步正在进行中'}, 409)
         return {'status': 'started'}
 
+    @app.get('/api/site-search')
+    async def site_search(q: str = Query(..., min_length=1)):
+        """Search the site itself (not the local DB) for downloadable albums."""
+        if not _archiver_ref:
+            return JSONResponse({'error': 'not ready'}, 503)
+        archiver = _archiver_ref[0]
+        try:
+            items = await asyncio.to_thread(archiver.client.search, q)
+        except Exception as exc:
+            return JSONResponse({'error': str(exc)}, 502)
+        return {'items': [
+            {'id': it.get('id'), 'title': it.get('title'),
+             'episode_count': it.get('episode_count'),
+             'is_finished': bool(it.get('is_finished')),
+             'cover': it.get('cover') or ''}
+            for it in items
+        ]}
+
     @app.get('/api/logs')
     async def get_logs(n: int = Query(200, ge=1, le=2000)):
         if not _log_buffer:

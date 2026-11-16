@@ -227,6 +227,7 @@ header .container{display:flex;align-items:center;justify-content:space-between;
   <div class="tabs">
     <div class="tab active" data-page="dashboard">仪表盘</div>
     <div class="tab" data-page="albums">专辑列表</div>
+    <div class="tab" data-page="search">搜索下载</div>
     <div class="tab" data-page="logs">同步日志</div>
     <div class="tab" data-page="settings">运行参数</div>
   </div>
@@ -275,6 +276,19 @@ header .container{display:flex;align-items:center;justify-content:space-between;
   </div>
 
   <!-- ================= Logs ================= -->
+  <div class="page" id="page-search">
+    <div class="card"><div class="card-body">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        <input type="text" class="input" id="site-search-q" placeholder="输入剧名搜索站点…" style="flex:1;min-width:200px">
+        <button class="btn btn-primary" id="btn-site-search">🔍 搜索</button>
+      </div>
+      <div class="sync-meta" id="site-search-count" style="margin:12px 0 10px">
+        直接搜索站点上的短剧（无需先同步分类），点「下载」只下载那一部
+      </div>
+      <div id="site-search-list" class="album-list"></div>
+    </div></div>
+  </div>
+
   <div class="page" id="page-logs">
     <div class="log-toolbar">
       <span class="tag tag-ongoing" id="ws-status">连接中…</span>
@@ -372,6 +386,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     const page = tab.dataset.page;
     document.getElementById('page-' + page).classList.add('active');
     if (page === 'albums') loadAlbums();
+    if (page === 'search') document.getElementById('site-search-q').focus();
     if (page === 'logs') { connectWS(); renderLogs(); }
     if (page === 'dashboard') loadDashboard();
     if (page === 'settings') loadSettings();
@@ -479,6 +494,55 @@ function updateSync(sync){
   document.getElementById('last-sync').textContent = '上次同步：' + (sync.last_sync || '-');
   document.getElementById('btn-sync').disabled = !!sync.running;
   document.getElementById('btn-scan').disabled = !!sync.running;
+}
+
+/* ---------------- site search ---------------- */
+const siteSearchQ = document.getElementById('site-search-q');
+siteSearchQ.addEventListener('keydown', e => { if (e.key === 'Enter') siteSearch(); });
+document.getElementById('btn-site-search').addEventListener('click', siteSearch);
+
+async function siteSearch(){
+  const q = siteSearchQ.value.trim();
+  const list = document.getElementById('site-search-list');
+  const count = document.getElementById('site-search-count');
+  if (!q) { count.textContent = '请输入剧名关键词'; return; }
+  count.textContent = '搜索中…';
+  try {
+    const d = await api('/api/site-search?q=' + encodeURIComponent(q));
+    const items = d.items || [];
+    count.textContent = items.length
+      ? `找到 ${items.length} 个相近结果（模糊匹配），点「下载」只下载那一部`
+      : '没有找到相关短剧';
+    list.innerHTML = items.map(it => `
+      <div class="album-item">
+        <img class="cover" loading="lazy" src="${esc(it.cover)}" alt=""
+             onerror="this.outerHTML='&lt;div class=&quot;cover ph&quot;&gt;🍊&lt;/div&gt;'">
+        <div class="album-main">
+          <div class="album-title">${esc(it.title)}</div>
+          <div class="album-meta">
+            <span class="tag tag-mute">ID ${it.id}</span>
+            <span class="tag tag-mute">共 ${it.episode_count || '?'} 集</span>
+            ${it.is_finished ? '<span class="tag tag-done">已完结</span>' : '<span class="tag tag-ongoing">连载中</span>'}
+          </div>
+        </div>
+        <div class="album-right">
+          <button class="btn btn-primary btn-sm" onclick="siteDownload(${it.id}, this)">📥 下载</button>
+        </div>
+      </div>`).join('');
+  } catch(e) { count.textContent = '搜索失败：' + e.message; }
+}
+
+async function siteDownload(id, btn){
+  btn.disabled = true;
+  btn.textContent = '已启动…';
+  try {
+    await api('/api/sync?album_id=' + id, {method: 'POST'});
+    toast('已开始下载 ID ' + id + '，进度见「同步日志」');
+  } catch(e) {
+    toast('启动下载失败：' + e.message, true);
+    btn.disabled = false;
+    btn.textContent = '📥 下载';
+  }
 }
 
 /* ---------------- albums ---------------- */

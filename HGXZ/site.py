@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 import json
 import logging
@@ -85,14 +85,33 @@ class HuangguoClient:
         return self._request('GET', url)
 
     def play_url(self, album_id: int, episode: int) -> str:
-        raw = self._request('GET', f'/api/videos/{int(album_id)}/play?' + urlencode({'ep': int(episode)}))
+        # Since the 2026-11 site redesign the signed HLS manifest is served by
+        # POST /api/videos/<id>/episodes/<ep>/playback; the old GET /play
+        # endpoint only returns empty video_url fields now.
+        raw = self._request(
+            'POST', f'/api/videos/{int(album_id)}/episodes/{int(episode)}/playback',
+            data=b'{}', headers={'Content-Type': 'application/json'})
         payload = json.loads(raw)
         if payload.get('status') != 1:
-            raise RuntimeError(payload.get('msg') or 'play endpoint failed')
-        url = ((payload.get('data') or {}).get('video_url') or '').strip()
+            raise RuntimeError(payload.get('msg') or 'playback endpoint failed')
+        data = payload.get('data') or {}
+        if data.get('manifest_method') != 'GET':
+            raise RuntimeError('playback returned no GET manifest')
+        url = ((data.get('streams') or {}).get('main') or '').strip()
         if not url:
-            raise RuntimeError('empty video_url')
+            raise RuntimeError('empty playback stream')
         return url
+
+    def search(self, keyword: str, page: int = 1) -> list[dict]:
+        path = '/api/search?q=' + quote(str(keyword))
+        if int(page) > 1:
+            path += f'&page={int(page)}'
+        raw = self._request('GET', path)
+        payload = json.loads(raw)
+        if payload.get('status') != 1:
+            raise RuntimeError(payload.get('msg') or 'search failed')
+        data = payload.get('data') or {}
+        return list(data.get('items') or [])
 
     def cover_url(self, album_id: int) -> str:
         body = json.dumps({'items': [{'type': 'video', 'id': int(album_id)}]}, ensure_ascii=False).encode()
