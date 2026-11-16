@@ -128,12 +128,40 @@ docker run -d --name HGXZ \
 
 ---
 
+### 飞牛（fnOS）部署
+
+1. **准备目录**：在飞牛「文件管理」（或 SMB 共享）里选一个共享文件夹，创建 `HGXZ` 目录，内含 `config/`、`data/`、`logs/`、`media/` 四个子目录。
+2. **上传项目**：把整个项目代码放进 `HGXZ/` 目录（git clone 或从电脑复制均可）。
+3. **准备配置**：
+
+   ```bash
+   cp config.example.json config/config.json
+   ```
+
+   配置里的 `/media`、`/data`、`/logs` 是容器内路径，照抄模板即可，无需修改。
+4. **启动**（二选一）：
+
+   ```bash
+   # 方式 A：SSH 进 NAS，在项目目录里执行
+   docker compose up -d --build
+   ```
+
+   **方式 B：图形界面** —— 打开飞牛 **【Docker】** → **【Compose】** → 新建项目 → 选择 `HGXZ` 目录（使用目录中的 `docker-compose.yml`）→ 构建并启动。
+5. **访问**：浏览器打开 `http://[飞牛IP]:8099`。
+
+> - `docker-compose.yml` 默认以 `--daemon --no-sync` 启动：只提供 WebUI、不自动爬分类，用「搜索下载」页按需下载；改成 `command: ["--daemon"]` 即恢复每天定时全量同步。
+> - **不使用本地构建**时：先将代码 push 到 main 让 GitHub Actions 自动构建镜像，再把 compose 里的 `build: .` 换成 `image: ghcr.io/wx2cyj/hgxz:latest`（私有镜像需先 `docker login ghcr.io`）。
+> - 下载目录 `media/` 可直接被飞牛上的 Emby / Jellyfin 添加为**节目**类型媒体库。
+
+---
+
 ## 四、WebUI 界面说明
 
 | 页面 | 内容 |
 |------|------|
 | **仪表盘** | 专辑总数/总集数、已下载集数与占用容量、完整专辑数、失败集数；分类进度条；最近完成的专辑 |
 | **专辑列表** | 封面缩略图、标题、分类、完成度进度条（绿色完成 / 红色失败）、状态标签；支持按分类/状态筛选与关键字搜索 |
+| **搜索下载** | 直接搜索站点上的短剧（无需先同步分类），显示封面/ID/集数/状态，点「📥 下载」按钮只下载那一部 |
 | **剧集明细** | 点击专辑进入：封面大图、已下载容量、最近下载时间、待下载与失败集数、存储路径；逐集状态列表；单独同步 / 重置失败按钮 |
 | **同步日志** | WebSocket 实时推送，支持按级别与关键字过滤、自动滚动开关、清屏 |
 | **运行参数** | 只读展示当前生效的配置（主站、备用域名、媒体目录、重试次数、超时等） |
@@ -153,10 +181,10 @@ daemon 模式由 `--daemon` 显式开启，其余子命令直接运行：
 
 ```bash
 # 常驻模式（Docker 默认）：立即同步一次，之后每天定时同步，同时开启 WebUI
-python -m HGXZ.cli --config /config/config.json --daemon
+python -m HGXZ.cli --config config.json --daemon
 
 # 单次同步
-python -m HGXZ.cli --config /config/config.json
+python -m HGXZ.cli --config config.json
 
 # 只同步指定专辑（忽略冷却期，强制重试）
 python -m HGXZ.cli --config /config/config.json --only-id 12345
@@ -173,6 +201,60 @@ python -m HGXZ.cli --config /config/config.json --rebuild-covers
 # 限制范围，便于调试
 python -m HGXZ.cli --config /config/config.json --max-albums 3 --max-episodes 2
 ```
+
+### 搜索并下载指定的短剧（--search / --only-id）
+
+只想下载某一部短剧、不做全量同步时，用搜索或指定 ID 的方式：
+
+**方式一：按剧名搜索（推荐）**
+
+```bash
+# 搜索站点，列出匹配的短剧（ID、标题、状态、集数）
+python -m HGXZ.cli --config config.json --search "恶少崛起"
+
+# 搜索并直接下载标题精确匹配的那一部
+python -m HGXZ.cli --config config.json --search "恶少崛起" --download
+
+# 搜索下载时只下前 3 集
+python -m HGXZ.cli --config config.json --search "恶少崛起" --download --max-episodes 3
+```
+
+> 搜索为模糊匹配，一次会返回多个相近结果；`--download` 只下载**标题与关键词完全相同**的那一部，避免误下。若没有精确匹配，会列出相近结果供你用 `--only-id` 挑选。
+
+**方式二：按专辑 ID 指定**
+
+1. **找到专辑 ID**：在站点打开那部短剧的详情页，网址里的数字就是 ID：
+
+   ```
+   https://2a52.bmikbxhi.cc/video/13786/
+                                          ^^^^^ 专辑 ID
+   ```
+
+2. **执行下载**：
+
+   ```bash
+   # 只下载这一部（自动创建目录、封面、NFO，并下载全部剧集）
+   python -m HGXZ.cli --config config.json --only-id 13786
+
+   # 常用变体
+   python -m HGXZ.cli --config config.json --only-id 13786 --max-episodes 3   # 只下载前 3 集
+   python -m HGXZ.cli --config config.json --only-id 13786 --metadata-only    # 只写元数据不下载视频
+   ```
+
+   > `--only-id` 会忽略失败冷却期、强制重试；在运行中的容器里执行时把 `--config config.json` 换成 `--config /config/config.json`。
+
+**也可以在 WebUI 里操作**：打开 **专辑列表** → 搜索剧名 → 点进专辑 → 点 **「单独同步」** 按钮，效果与 `--only-id` 相同。
+
+### 只开 WebUI，不自动爬取分类（--no-sync）
+
+默认的 `--daemon` 会启动时立即全量遍历所有分类，并每天定时同步。如果你只想按需手动下载、不想自动爬取，加 `--no-sync`：
+
+```bash
+# 常驻运行但不自动同步：只提供 WebUI，下载全部由你手动触发
+python -m HGXZ.cli --config config.json --daemon --no-sync
+```
+
+此模式下界面照常可用（含「单独同步」按钮），但启动时和每天定时都不会自动抓取分类。
 
 在已运行的容器内执行子命令（镜像是常驻模式，需要覆盖入口参数）：
 
