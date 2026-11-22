@@ -115,6 +115,12 @@ class StateDB:
             return all(number in done and Path(done[number]).exists()
                        for number in range(1, episode_count + 1))
 
+    def existing_albums(self) -> list[dict]:
+        """All albums already in the library, for update-only syncs."""
+        with self._lock:
+            return [dict(x) for x in self.conn.execute(
+                'SELECT id, category, title, directory FROM albums ORDER BY id')]
+
     def unfinished_albums(self) -> list[dict]:
         with self._lock:
             return [dict(x) for x in self.conn.execute(

@@ -168,7 +168,7 @@ docker run -d --name HGXZ \
 
 顶部按钮：
 
-- **🔄 立即同步** — 全量遍历所有分类并下载新增剧集
+- **🔄 立即同步** — 只更新已有短剧：检查已收录短剧的更新并补下新集数，不会发现新短剧（新短剧用「搜索下载」页或 `--only-id` 添加）
 - **📂 扫描已有** — 扫描媒体目录，把已存在的视频注册进状态库（不会重复下载）
 
 > 同步进行中时按钮自动禁用，定时任务与手动同步互斥，不会并发下载同一集。
@@ -188,6 +188,9 @@ python -m HGXZ.cli --config config.json
 
 # 只同步指定专辑（忽略冷却期，强制重试）
 python -m HGXZ.cli --config /config/config.json --only-id 12345
+
+# 只更新已有短剧（检查新集数并补下载、刷新元数据，不遍历分类发现新短剧）
+python -m HGXZ.cli --config /config/config.json --update-only
 
 # 只写元数据（NFO/封面），不下载视频
 python -m HGXZ.cli --config /config/config.json --metadata-only
@@ -285,6 +288,10 @@ docker exec HGXZ python -m HGXZ.cli --config /config/config.json --scan-existing
     ],
     "request_interval": 2,
     "timeout": 30,
+    "announce_urls": [
+      "https://huang-guo.pages.dev/",
+      "https://huangguoai.pages.dev/"
+    ],
     "categories": [
       { "name": "AI成人短剧", "path": "/ai-duanju/", "library": "AI成人短剧" },
       { "name": "AI成人漫剧", "path": "/ai-manju/", "library": "AI成人漫剧" }
@@ -305,8 +312,9 @@ docker exec HGXZ python -m HGXZ.cli --config /config/config.json --scan-existing
 
 | 参数项 | 说明 | 默认推荐值 |
 |--------|------|------------|
-| `site.base_url` | 主站根域名 | `https://huangguoai.com` |
-| `site.backup_urls` | 备用域名列表，主站故障时自动切换（建议保留全部 9 个） | 见模板 |
+| `site.base_url` | 主站根域名（地址失效时会自动更新并写回本文件） | `https://huangguoai.com` |
+| `site.backup_urls` | 备用域名列表，主站故障时自动切换，切换结果会写回本文件 | 见模板 |
+| `site.announce_urls` | 地址发布页列表，配置的地址全部失效时自动从这里获取最新镜像（发布页证书过期时仍可访问） | 见模板 |
 | `site.request_interval` | 请求间隔延迟（秒），防止被站点风控 | `2` |
 | `site.timeout` | 单次请求超时（秒） | `30` |
 | `site.categories` | 抓取的短剧分类与对应生成的 Emby 媒体库目录名 | — |

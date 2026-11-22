@@ -26,7 +26,7 @@ LOG = logging.getLogger('HGXZ')
 class Archiver:
     MAX_CATEGORY_PAGES = 100
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, config_path: Path | None = None):
         self.config = config
         site = config['site']
         self.client = HuangguoClient(
@@ -34,6 +34,8 @@ class Archiver:
             float(site.get('request_interval', 2)),
             int(site.get('timeout', 30)),
             backup_urls=site.get('backup_urls', []),
+            announce_urls=site.get('announce_urls'),
+            config_path=config_path,
         )
         self.root = Path(config['download']['root'])
         self.state = StateDB(Path(config['state']['database']))
@@ -150,6 +152,21 @@ class Archiver:
         except OSError:
             return None
         return None
+
+    def _category_for(self, row: dict) -> dict:
+        """Rebuild the category dict for an album already in the state DB.
+
+        The library component must match the recorded directory's parent so
+        _album_dir keeps using the existing folder instead of creating a new
+        one under a different library path.
+        """
+        directory = row.get('directory') or ''
+        library = Path(directory).parent.name if directory else ''
+        if not library:
+            configured = next((c for c in self.config['site']['categories']
+                               if c['name'] == row['category']), None)
+            library = (configured or self.config['site']['categories'][0])['library']
+        return {'name': row['category'], 'library': library}
 
     def sync_album(self, album_id: int, category: dict, *,
                    metadata_only: bool = False,
@@ -279,10 +296,19 @@ class Archiver:
         return result
 
     def scan(self, *, metadata_only=False, only_id=None,
-             max_albums=None, max_episodes=None):
+             max_albums=None, max_episodes=None, update_only=False):
+        LOG.info('sync started (mode=%s)',
+                 'single-album' if only_id else 'update-only' if update_only else 'full')
         force = bool(only_id)
         if only_id:
             found = [(only_id, self.config['site']['categories'][0])]
+        elif update_only:
+            # Only refresh albums already in the library: no category crawl,
+            # no newly discovered albums. New shows are added explicitly via
+            # the search/download page or --only-id.
+            found = [(row['id'], self._category_for(row))
+                     for row in self.state.existing_albums()]
+            LOG.info('update-only sync: refreshing %d existing album(s)', len(found))
         else:
             found = self.discover()
         if max_albums:
@@ -314,7 +340,8 @@ def load_config(path: Path) -> dict:
     return json.loads(path.read_text(encoding='utf-8'))
 
 
-def run_daemon(config: dict, schedule: str, web_port: int = 8099, *, no_sync: bool = False) -> int:
+def run_daemon(config: dict, schedule: str, web_port: int = 8099, *, no_sync: bool = False,
+               update_only: bool = False, config_path: Path | None = None) -> int:
     from .web.app import (create_app, mark_sync_finished, release_sync,
                           set_shared_state, try_acquire_sync)
     from .web.log_handler import LogBuffer
@@ -336,7 +363,7 @@ def run_daemon(config: dict, schedule: str, web_port: int = 8099, *, no_sync: bo
         file_handler.setFormatter(formatter)
         root_logger.addHandler(file_handler)
 
-    archiver = Archiver(config)
+    archiver = Archiver(config, config_path=config_path)
     archiver_ref = [archiver]
     set_shared_state(archiver.state, log_buf, archiver_ref)
 
@@ -356,7 +383,7 @@ def run_daemon(config: dict, schedule: str, web_port: int = 8099, *, no_sync: bo
                 LOG.warning('scheduled sync skipped: another sync is already running')
             else:
                 try:
-                    archiver.scan()
+                    archiver.scan(update_only=update_only)
                     mark_sync_finished()
                 except Exception as exc:
                     _sync_status['last_error'] = str(exc)
@@ -378,6 +405,8 @@ def run_daemon(config: dict, schedule: str, web_port: int = 8099, *, no_sync: bo
     if no_sync:
         LOG.info('auto sync disabled (--no-sync): WebUI only, no category crawl')
     else:
+        if update_only:
+            LOG.info('scheduled sync limited to existing albums (--update-only)')
         sync_thread = threading.Thread(target=sync_loop, daemon=True, name='sync-daemon')
         sync_thread.start()
 
@@ -392,6 +421,9 @@ def main() -> int:
     parser.add_argument('--config', default='/config/config.json')
     parser.add_argument('--metadata-only', action='store_true')
     parser.add_argument('--only-id', type=int)
+    parser.add_argument('--update-only', action='store_true',
+                        help='只更新状态库中已有的短剧（检查新集数并补下载），不遍历分类发现新短剧；'
+                             '--daemon 模式下每日定时同步同样生效')
     parser.add_argument('--search', help='按关键词搜索站点短剧并列出结果；配合 --download 直接下载精确匹配的那部')
     parser.add_argument('--download', action='store_true',
                         help='与 --search 连用：下载标题与关键词完全匹配的短剧')
@@ -421,6 +453,7 @@ def main() -> int:
         except Exception as exc:
             logging.getLogger('HGXZ').warning('failed to set umask=%s: %s', umask_val, exc)
     config = load_config(Path(args.config))
+    config_path = Path(args.config)
 
     if args.search:
         site = config['site']
@@ -429,6 +462,8 @@ def main() -> int:
             float(site.get('request_interval', 2)),
             int(site.get('timeout', 30)),
             backup_urls=site.get('backup_urls', []),
+            announce_urls=site.get('announce_urls'),
+            config_path=config_path,
         )
         items = client.search(args.search)
         keyword = args.search.strip()
@@ -451,7 +486,7 @@ def main() -> int:
             for it in items:
                 print(f"ID {it.get('id')} | {it.get('title')} | 共 {it.get('episode_count')} 集")
             return 1
-        archiver = Archiver(config)
+        archiver = Archiver(config, config_path=config_path)
         try:
             results = [archiver.sync_album(int(it['id']), config['site']['categories'][0],
                                            max_episodes=args.max_episodes, force=True)
@@ -469,7 +504,8 @@ def main() -> int:
         return 0
 
     if args.daemon:
-        return run_daemon(config, args.schedule, args.port, no_sync=args.no_sync)
+        return run_daemon(config, args.schedule, args.port, no_sync=args.no_sync,
+                          update_only=args.update_only, config_path=config_path)
 
     if args.scan_existing:
         from .scanner import scan_existing
@@ -491,6 +527,8 @@ def main() -> int:
             float(site.get('request_interval', 2)),
             int(site.get('timeout', 30)),
             backup_urls=site.get('backup_urls', []),
+            announce_urls=site.get('announce_urls'),
+            config_path=config_path,
         )
         result = rebuild(Path(config['download']['root']), client)
         print(json.dumps(result, ensure_ascii=False))
@@ -500,7 +538,8 @@ def main() -> int:
     try:
         results, failures = archiver.scan(
             metadata_only=args.metadata_only, only_id=args.only_id,
-            max_albums=args.max_albums, max_episodes=args.max_episodes)
+            max_albums=args.max_albums, max_episodes=args.max_episodes,
+            update_only=args.update_only)
     finally:
         archiver.close()
     if args.json:

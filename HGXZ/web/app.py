@@ -161,12 +161,13 @@ def create_app() -> FastAPI:
         _start_background('queued-sync', work)
 
     @app.post('/api/sync')
-    async def trigger_sync(album_id: int | None = None):
+    async def trigger_sync(album_id: int | None = None, update_only: bool = False):
         if not _archiver_ref:
             return JSONResponse({'error': 'not ready'}, 503)
         archiver = _archiver_ref[0]
         if _start_background('manual-sync',
-                             lambda: archiver.scan(only_id=album_id)):
+                             lambda: archiver.scan(only_id=album_id,
+                                                   update_only=update_only)):
             return {'status': 'started', 'album_id': album_id}
         if album_id is not None:
             # Single-album downloads queue up instead of being rejected while

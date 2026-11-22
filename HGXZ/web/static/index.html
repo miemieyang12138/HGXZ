@@ -707,10 +707,10 @@ function backToList(){
 
 /* ---------------- actions ---------------- */
 document.getElementById('btn-sync').addEventListener('click', async () => {
-  if (!confirm('确定立即开始全量同步？将遍历所有分类并下载新增剧集。')) return;
+  if (!confirm('确定立即同步？只检查并更新已有短剧（补下新集数、刷新元数据），不会发现和下载新短剧。')) return;
   try {
-    const r = await api('/api/sync', {method: 'POST'});
-    toast('同步已开始' + (r.album_id ? '（专辑 ' + r.album_id + '）' : ''));
+    const r = await api('/api/sync?update_only=1', {method: 'POST'});
+    toast('同步已开始（仅更新已有短剧）' + (r.album_id ? '（专辑 ' + r.album_id + '）' : ''));
     updateSync({running: true, last_sync: null, last_error: null});
   } catch(e) { toast('启动失败：' + e.message, true); }
 });
