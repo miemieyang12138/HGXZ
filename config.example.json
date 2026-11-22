@@ -14,6 +14,10 @@
     ],
     "request_interval": 2,
     "timeout": 30,
+    "announce_urls": [
+      "https://huang-guo.pages.dev/",
+      "https://huangguoai.pages.dev/"
+    ],
     "categories": [
       {
         "name": "AI成人短剧",

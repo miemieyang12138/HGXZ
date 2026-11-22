@@ -51,6 +51,8 @@ def main() -> int:
         float(site.get('request_interval', 2)),
         int(site.get('timeout', 30)),
         backup_urls=site.get('backup_urls', []),
+        announce_urls=site.get('announce_urls'),
+        config_path=Path(args.config),
     )
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
     result = rebuild(Path(config['download']['root']), client)
